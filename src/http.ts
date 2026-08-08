@@ -50,7 +50,7 @@ export async function serveHttp(configPath?: string, overrides: HttpOverrides = 
 
   await new Promise<void>((resolvePromise, rejectPromise) => {
     const listener = app.listen(port, host, () => {
-      console.error(`mcp-ssh-connectors listening on http://${host}:${port}/mcp with Bearer authentication`);
+      console.error(`mcp-ssh-connectors listening with Bearer authentication: host=${host} port=${port} path=/mcp`);
     });
     listener.once("error", rejectPromise);
     let closing = false;
