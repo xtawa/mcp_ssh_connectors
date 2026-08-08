@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
+import { commandFingerprint } from "./audit.js";
 import { loadConfig } from "./config.js";
 import { evaluateCommand, getTarget } from "./policy.js";
 import { checkConnection, runRemoteCommand } from "./ssh.js";
@@ -65,7 +66,7 @@ export function createMcpServer(config: ResolvedConfig): McpServer {
       return textResult({
         target,
         destination: config.targets[target]?.destination,
-        commandHash: command,
+        commandHash: commandFingerprint(command),
         ...decision,
       });
     },

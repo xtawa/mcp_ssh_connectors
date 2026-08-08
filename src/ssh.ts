@@ -38,6 +38,7 @@ export async function runRemoteCommand(
   eventType: "exec" | "check" = "exec",
 ): Promise<ExecResult> {
   const target = getTarget(config, targetName);
+  if (target.disabled) throw new Error(`Target ${targetName} is disabled`);
   const timeoutMs = Math.min(requestedTimeoutMs ?? target.timeoutMs, target.timeoutMs);
   const requestId = randomUUID();
   const startedAt = Date.now();

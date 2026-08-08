@@ -24,7 +24,9 @@ Examples:
 `;
 
 function takeOption(args: string[], name: string): string | undefined {
-  const index = args.indexOf(name);
+  const separator = args.indexOf("--");
+  const searchEnd = separator === -1 ? args.length : separator;
+  const index = args.slice(0, searchEnd).indexOf(name);
   if (index === -1) return undefined;
   const value = args[index + 1];
   if (!value) throw new Error(`${name} requires a value`);
