@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "sshBinary": "ssh",
+  "audit": {
+    "required": true,
+    "logCommands": false
+  },
+  "defaults": {
+    "timeoutMs": 30000,
+    "connectTimeoutSeconds": 10,
+    "maxOutputBytes": 1048576,
+    "knownHostsFile": "~/.ssh/known_hosts"
+  },
+  "policy": {
+    "maxCommandLength": 4096,
+    "deniedCommands": [
+      "(?:^|[;&|]\\s*)rm\\s+-rf(?:\\s|$)",
+      "(?:^|\\s)sudo(?:\\s|$)",
+      "(?:^|\\s)(?:shutdown|reboot|poweroff)(?:\\s|$)"
+    ]
+  },
+  "targets": {
+    "example": {
+      "destination": "user@server.example.com",
+      "description": "Replace with a host or an alias from ~/.ssh/config",
+      "tags": ["example"],
+      "allowedCommands": [
+        "^(?:hostname|whoami|uptime|uname(?:\\s+-a)?)$"
+      ],
+      "deniedCommands": [],
+      "requireReason": false
+    }
+  }
+}
