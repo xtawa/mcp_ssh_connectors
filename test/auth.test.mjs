@@ -36,6 +36,18 @@ test("parses bounded relative expirations", () => {
   assert.throws(() => parseExpiry("400d", now), /up to 366 days/);
 });
 
+test("create rejects an API key lifetime over 366 days", async () => {
+  await assert.rejects(
+    createApiKey("/unused/keys.json", {
+      name: "too-long",
+      scopes: ["mcp"],
+      targets: ["*"],
+      expiresAt: new Date(Date.now() + 400 * 86_400_000),
+    }),
+    /no more than 366 days/,
+  );
+});
+
 test("HTTP access requires both operation scope and target scope", () => {
   const access = { transport: "http", clientId: "key-1", scopes: ["mcp", "ssh:read", "target:staging"] };
   assert.equal(authorizeAccess(access, "ssh:read", "staging").allowed, true);

@@ -5,6 +5,7 @@ import { dirname } from "node:path";
 const KEY_ID = /^[A-Za-z0-9_-]{8,32}$/;
 const TARGET = /^(?:\*|[A-Za-z0-9][A-Za-z0-9._-]{0,63})$/;
 const ALLOWED_SCOPES = new Set(["mcp", "ssh:read", "ssh:exec"]);
+const MAX_KEY_LIFETIME_MS = 366 * 86_400_000;
 
 export interface ApiKeyRecord {
   id: string;
@@ -79,7 +80,7 @@ export function parseExpiry(value: string, now = Date.now()): Date {
   } else {
     timestamp = Date.parse(value);
   }
-  const maximum = now + 366 * 86_400_000;
+  const maximum = now + MAX_KEY_LIFETIME_MS;
   if (!Number.isFinite(timestamp) || timestamp <= now || timestamp > maximum) {
     throw new Error("Expiry must be a future ISO date or duration such as 30d, up to 366 days");
   }
@@ -99,7 +100,11 @@ export async function createApiKey(path: string, options: CreateApiKeyOptions): 
   if (targets.length === 0 || targets.some((target) => !TARGET.test(target))) {
     throw new Error("Targets must contain one or more target names, or '*'");
   }
-  if (options.expiresAt.getTime() <= Date.now()) throw new Error("API key expiry must be in the future");
+  const now = Date.now();
+  const expiry = options.expiresAt.getTime();
+  if (!Number.isFinite(expiry) || expiry <= now || expiry > now + MAX_KEY_LIFETIME_MS) {
+    throw new Error("API key expiry must be in the future and no more than 366 days away");
+  }
 
   const store = await readStore(path);
   const id = randomBytes(9).toString("base64url");
@@ -114,7 +119,7 @@ export async function createApiKey(path: string, options: CreateApiKeyOptions): 
     hash: hash.toString("base64url"),
     scopes,
     targets,
-    createdAt: new Date().toISOString(),
+    createdAt: new Date(now).toISOString(),
     expiresAt: options.expiresAt.toISOString(),
   };
   store.keys.push(record);
@@ -127,7 +132,8 @@ export async function verifyApiKey(path: string, token: string): Promise<ApiKeyR
   if (!match) return undefined;
   const store = await readStore(path);
   const record = store.keys.find((item) => item.id === match[1]);
-  if (!record || record.revokedAt || Date.parse(record.expiresAt) <= Date.now()) return undefined;
+  const expiry = record ? Date.parse(record.expiresAt) : Number.NaN;
+  if (!record || record.revokedAt || !Number.isFinite(expiry) || expiry <= Date.now()) return undefined;
   const expected = Buffer.from(record.hash, "base64url");
   const actual = await derive(token, Buffer.from(record.salt, "base64url"));
   if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return undefined;
