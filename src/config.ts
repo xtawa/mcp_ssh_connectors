@@ -9,6 +9,8 @@ const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/;
 const EXAMPLE_CONFIG = {
   version: 1,
   sshBinary: "ssh",
+  auth: { keyStore: "~/.config/mcp-ssh/keys.json" },
+  http: { host: "127.0.0.1", port: 3000, allowedHosts: [], allowedOrigins: [] },
   audit: { required: true, logCommands: false },
   defaults: {
     timeoutMs: 30_000,
@@ -115,6 +117,10 @@ function defaultAuditPath(): string {
   return join(homedir(), ".local", "state", "mcp-ssh", "audit.jsonl");
 }
 
+export function isLoopbackHost(host: string): boolean {
+  return host === "127.0.0.1" || host === "localhost" || host === "::1";
+}
+
 function validateEndpoint(value: string, label: string): void {
   if (value.startsWith("-") || CONTROL_CHARACTER.test(value)) {
     throw new Error(`${label} may not start with '-' or contain control characters`);
@@ -148,31 +154,19 @@ export async function loadConfig(configPath = defaultConfigPath()): Promise<Reso
   }
 
   const root = asObject(parsed, "config");
-  if (root.version !== undefined && root.version !== 1) {
-    throw new Error("config.version must be 1");
-  }
+  if (root.version !== undefined && root.version !== 1) throw new Error("config.version must be 1");
 
   const defaults = objectOrEmpty(root.defaults, "defaults");
   const policy = objectOrEmpty(root.policy, "policy");
   const audit = objectOrEmpty(root.audit, "audit");
+  const auth = objectOrEmpty(root.auth, "auth");
+  const http = objectOrEmpty(root.http, "http");
   const rawTargets = asObject(root.targets, "targets");
   if (Object.keys(rawTargets).length === 0) throw new Error("targets must contain at least one named target");
 
   const defaultTimeout = integerValue(defaults.timeoutMs, 30_000, "defaults.timeoutMs", 100, 600_000);
-  const defaultConnectTimeout = integerValue(
-    defaults.connectTimeoutSeconds,
-    10,
-    "defaults.connectTimeoutSeconds",
-    1,
-    120,
-  );
-  const defaultMaxOutput = integerValue(
-    defaults.maxOutputBytes,
-    1_048_576,
-    "defaults.maxOutputBytes",
-    1_024,
-    10_485_760,
-  );
+  const defaultConnectTimeout = integerValue(defaults.connectTimeoutSeconds, 10, "defaults.connectTimeoutSeconds", 1, 120);
+  const defaultMaxOutput = integerValue(defaults.maxOutputBytes, 1_048_576, "defaults.maxOutputBytes", 1_024, 10_485_760);
   const defaultKnownHosts = optionalString(defaults.knownHostsFile, "defaults.knownHostsFile");
   const globalDeniedCommands = stringArray(policy.deniedCommands, "policy.deniedCommands");
   validatePatterns(globalDeniedCommands, "policy.deniedCommands");
@@ -197,9 +191,7 @@ export async function loadConfig(configPath = defaultConfigPath()): Promise<Reso
     const identityFile = optionalString(raw.identityFile, `targets.${name}.identityFile`);
     const knownHostsFile = optionalString(raw.knownHostsFile, `targets.${name}.knownHostsFile`) ?? defaultKnownHosts;
     const description = optionalString(raw.description, `targets.${name}.description`);
-    const port = raw.port === undefined
-      ? undefined
-      : integerValue(raw.port, 22, `targets.${name}.port`, 1, 65_535);
+    const port = raw.port === undefined ? undefined : integerValue(raw.port, 22, `targets.${name}.port`, 1, 65_535);
 
     targets[name] = {
       destination,
@@ -213,28 +205,30 @@ export async function loadConfig(configPath = defaultConfigPath()): Promise<Reso
       deniedCommands: [...globalDeniedCommands, ...targetDeniedCommands],
       disabled: booleanValue(raw.disabled, false, `targets.${name}.disabled`),
       timeoutMs: integerValue(raw.timeoutMs, defaultTimeout, `targets.${name}.timeoutMs`, 100, 600_000),
-      connectTimeoutSeconds: integerValue(
-        raw.connectTimeoutSeconds,
-        defaultConnectTimeout,
-        `targets.${name}.connectTimeoutSeconds`,
-        1,
-        120,
-      ),
-      maxOutputBytes: integerValue(
-        raw.maxOutputBytes,
-        defaultMaxOutput,
-        `targets.${name}.maxOutputBytes`,
-        1_024,
-        10_485_760,
-      ),
+      connectTimeoutSeconds: integerValue(raw.connectTimeoutSeconds, defaultConnectTimeout, `targets.${name}.connectTimeoutSeconds`, 1, 120),
+      maxOutputBytes: integerValue(raw.maxOutputBytes, defaultMaxOutput, `targets.${name}.maxOutputBytes`, 1_024, 10_485_760),
       requireReason: booleanValue(raw.requireReason, false, `targets.${name}.requireReason`),
     };
   }
 
+  const host = stringValue(http.host, "127.0.0.1", "http.host");
+  const allowedHosts = stringArray(http.allowedHosts, "http.allowedHosts");
+  if (!isLoopbackHost(host) && allowedHosts.length === 0) {
+    throw new Error("http.allowedHosts is required when http.host is not loopback");
+  }
+  const keyStore = optionalString(auth.keyStore, "auth.keyStore") ?? join(dirname(path), "keys.json");
   const auditPath = stringValue(audit.path, defaultAuditPath(), "audit.path");
+
   return {
     path,
     sshBinary: expandUserPath(stringValue(root.sshBinary, "ssh", "sshBinary")),
+    authKeyStore: resolve(expandUserPath(keyStore)),
+    http: {
+      host,
+      port: integerValue(http.port, 3_000, "http.port", 1, 65_535),
+      allowedHosts,
+      allowedOrigins: stringArray(http.allowedOrigins, "http.allowedOrigins"),
+    },
     auditLog: resolve(expandUserPath(auditPath)),
     auditRequired: booleanValue(audit.required, true, "audit.required"),
     logCommands: booleanValue(audit.logCommands, false, "audit.logCommands"),

@@ -1,38 +1,39 @@
 # mcp_ssh_connectors
 
-A policy-gated Model Context Protocol server and local terminal tool that let an AI use the **host machine's OpenSSH client** to reach configured SSH instances, even when the model sandbox has no direct network path.
+A policy-gated MCP server and local terminal tool that let an AI use the **host machine's OpenSSH client** to reach configured SSH instances, even when the model sandbox has no direct network path.
 
-通过宿主机的 OpenSSH 客户端，把受策略限制的 SSH 能力提供给 AI；同时提供人类可直接在终端运行的 `mcp-ssh` 工具。
+通过宿主机的 OpenSSH 客户端，把受策略限制的 SSH 能力提供给 AI；支持本地 stdio，也支持带 API Key 鉴权的 Streamable HTTP MCP。
 
-> Security first: MCP can use only named targets and allowlisted commands. It cannot submit arbitrary hosts, SSH options, or private-key material.
+> Security first: MCP can use only named targets and allowlisted commands. HTTP clients additionally need a scoped, unexpired Bearer API key.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  AI[AI / MCP client] -->|stdio MCP| S[mcp-ssh-server on host]
-  H[Human terminal] -->|mcp-ssh CLI| S2[shared config + policy]
-  S --> S2
-  S2 -->|spawn, shell=false| O[Host OpenSSH client]
-  O --> J[optional ProxyJump / bastion]
+  AI[AI / MCP client] -->|stdio, local OS boundary| S[mcp-ssh-server]
+  AI -->|HTTP + Bearer API key| H[mcp-ssh-http]
+  H --> K[scrypt key store + scopes]
+  S --> P[shared target and command policy]
+  H --> P
+  U[Human terminal] -->|mcp-ssh CLI| P
+  P -->|spawn, shell=false| O[Host OpenSSH client]
   O --> R[configured SSH instances]
-  J --> R
-  S2 --> A[JSONL audit log]
+  P --> A[JSONL audit log]
 ```
 
-The server uses the official MCP TypeScript SDK v2 and the 2026-07-28 protocol generation. Node.js 20+ and an OpenSSH-compatible `ssh` executable are required.
+Node.js 20+ and an OpenSSH-compatible `ssh` executable are required.
 
-## What is included
+## Included
 
 - MCP tools: `ssh_list_targets`, `ssh_preview`, `ssh_check`, `ssh_exec`
-- Local CLI: `init`, `targets`, `preview`, `check`, `exec`, `connect`, `mcp`
-- Named-target isolation and regular-expression command policy
-- Strict host-key checking, non-interactive MCP execution, timeouts, and output caps
-- JSONL auditing with command hashing by default
+- Local stdio MCP and authenticated Streamable HTTP MCP
+- API key creation, listing, expiry, target scopes, operation scopes, and revocation
+- Local CLI: `init`, `targets`, `preview`, `check`, `exec`, `connect`, `mcp`, `http`, `key`
+- Strict host-key checking, default-deny command policy, timeouts, output caps, and JSONL auditing
 - ProxyJump, identity-file, port, and dedicated known-hosts support
-- CI and policy tests
+- CI and unit tests
 
-## Quick start
+## Install
 
 ```bash
 git clone https://github.com/xtawa/mcp_ssh_connectors.git
@@ -40,54 +41,99 @@ cd mcp_ssh_connectors
 npm install
 npm run check
 npm link
-
 mcp-ssh init
 $EDITOR ~/.config/mcp-ssh/config.json
 ```
 
-You can also copy `config.example.json`. Do not put private-key contents or passwords in the config.
-
-Trust and test a new host manually first so its key is present in `known_hosts`:
+Trust a new SSH host manually first, then test the policy:
 
 ```bash
 ssh example
-mcp-ssh targets
 mcp-ssh preview example -- uname -a
 mcp-ssh check example
 mcp-ssh exec example -- uname -a
 ```
 
-Open a normal human-operated terminal session:
-
-```bash
-mcp-ssh connect example
-```
-
-`connect` is intentionally not exposed to MCP. It opens an interactive shell for the local operator and is not governed by command allow rules.
-
-## Configure an MCP host
-
-After `npm run build` or `npm link`, register the stdio server in your MCP client:
+## Local stdio MCP
 
 ```json
 {
   "mcpServers": {
     "ssh-connectors": {
       "command": "mcp-ssh-server",
-      "env": {
-        "MCP_SSH_CONFIG": "/absolute/path/to/config.json"
-      }
+      "env": { "MCP_SSH_CONFIG": "/absolute/path/to/config.json" }
     }
   }
 }
 ```
 
-Without `MCP_SSH_CONFIG`, the default is:
+Stdio relies on the local OS account boundary; no API key is sent through the model context.
 
-- Linux/macOS: `~/.config/mcp-ssh/config.json` (or `$XDG_CONFIG_HOME/mcp-ssh/config.json`)
-- Windows: `%APPDATA%\\mcp-ssh\\config.json`
+## HTTP MCP with API Key authentication
 
-Restart the MCP server after changing the config.
+Create a read-only key restricted to `staging`:
+
+```bash
+mcp-ssh key create staging-observer \
+  --scopes mcp,ssh:read \
+  --targets staging \
+  --expires 30d
+```
+
+Create an execution key for two targets:
+
+```bash
+mcp-ssh key create deploy-agent \
+  --scopes mcp,ssh:read,ssh:exec \
+  --targets staging,production \
+  --expires 7d
+```
+
+The complete token is shown **once**. The key store contains only its salted `scrypt` hash. List metadata or revoke a key:
+
+```bash
+mcp-ssh key list
+mcp-ssh key revoke KEY_ID
+```
+
+Start the authenticated endpoint:
+
+```bash
+mcp-ssh http
+# or: mcp-ssh-http
+# http://127.0.0.1:3000/mcp
+```
+
+Clients send:
+
+```http
+Authorization: Bearer mcp_ssh.KEY_ID.SECRET
+```
+
+Example MCP client configuration:
+
+```json
+{
+  "mcpServers": {
+    "ssh-connectors-http": {
+      "url": "http://127.0.0.1:3000/mcp",
+      "headers": { "Authorization": "Bearer ${MCP_SSH_API_KEY}" }
+    }
+  }
+}
+```
+
+Keep the token in the client environment or secret manager. Do not commit it. For any non-loopback deployment, use TLS and set `http.allowedHosts`; preferably place the service behind a hardened reverse proxy.
+
+### Scopes
+
+| Scope | Permission |
+| --- | --- |
+| `mcp` | Required to reach the MCP endpoint |
+| `ssh:read` | List targets, preview commands, and check connectivity |
+| `ssh:exec` | Execute commands that also pass host policy |
+
+Every API key also has a target list. Use `--targets '*'` only when access to every configured target is intentional.
 
 ## Configuration
 
@@ -95,10 +141,14 @@ Restart the MCP server after changing the config.
 {
   "version": 1,
   "sshBinary": "ssh",
-  "audit": {
-    "required": true,
-    "logCommands": false
+  "auth": { "keyStore": "~/.config/mcp-ssh/keys.json" },
+  "http": {
+    "host": "127.0.0.1",
+    "port": 3000,
+    "allowedHosts": [],
+    "allowedOrigins": []
   },
+  "audit": { "required": true, "logCommands": false },
   "defaults": {
     "timeoutMs": 30000,
     "connectTimeoutSeconds": 10,
@@ -112,14 +162,12 @@ Restart the MCP server after changing the config.
   "targets": {
     "staging": {
       "destination": "deploy@10.0.20.15",
-      "port": 22,
       "identityFile": "~/.ssh/staging_ed25519",
       "proxyJump": "bastion",
       "tags": ["staging", "linux"],
       "allowedCommands": [
         "^uname -a$",
-        "^systemctl status [A-Za-z0-9_.@-]+$",
-        "^journalctl -u [A-Za-z0-9_.@-]+ -n (?:50|100)$"
+        "^systemctl status [A-Za-z0-9_.@-]+$"
       ],
       "deniedCommands": ["(?:^|[;&|]\\s*)rm(?:\\s|$)"],
       "requireReason": true
@@ -128,7 +176,7 @@ Restart the MCP server after changing the config.
 }
 ```
 
-Deny rules run before allow rules. A target with no `allowedCommands` is blocked by default. Commands must be single-line. Use anchored and argument-specific expressions rather than `.*`.
+Deny rules run before allow rules. A target with no `allowedCommands` is blocked. Commands must be single-line. Use anchored expressions rather than `.*`.
 
 ## Terminal commands
 
@@ -140,34 +188,29 @@ mcp-ssh check TARGET [--config PATH]
 mcp-ssh exec TARGET [--reason TEXT] -- COMMAND
 mcp-ssh connect TARGET [--config PATH]
 mcp-ssh mcp [--config PATH]
+mcp-ssh http [--host HOST] [--port PORT] [--config PATH]
+mcp-ssh key create NAME --targets LIST [--scopes LIST] [--expires 30d]
+mcp-ssh key list [--config PATH]
+mcp-ssh key revoke KEY_ID [--config PATH]
 ```
 
-For commands containing pipes, redirects, globbing, or spaces that must be preserved, pass the entire remote command as one quoted local argument:
+`connect` is a human-only interactive shell and is not exposed as an MCP tool.
 
-```bash
-mcp-ssh exec staging --reason "inspect errors" -- "journalctl -u api -n 100"
-```
+## Request authorization order
 
-## MCP behavior
+For HTTP requests the connector applies four independent checks:
 
-1. The model lists configured aliases with `ssh_list_targets`.
-2. It can call `ssh_preview` to see whether a command is allowed without opening a connection.
-3. `ssh_check` validates authentication and host-key trust with the remote no-op command `true`.
-4. `ssh_exec` repeats policy evaluation, writes an audit start event, invokes OpenSSH with `shell=false`, captures bounded output, and writes a finish event.
+1. validate the Bearer key hash, expiry, and revocation state;
+2. require operation scope (`ssh:read` or `ssh:exec`) and target access;
+3. apply the configured command deny rules, then allow rules;
+4. authenticate to the remote machine with the host SSH identity.
 
-The MCP command timeout may shorten but cannot extend the operator-configured target timeout.
+The API key id is recorded as the audit actor. Neither bearer tokens nor SSH key contents are logged.
 
 ## Security
 
-Read [docs/security.md](docs/security.md) before exposing production targets. The key rules are:
-
-- run as an unprivileged, dedicated OS account;
-- use least-privilege SSH identities and remote accounts;
-- keep strict host-key checking enabled;
-- use narrow command allowlists and keep required auditing on;
-- treat remote output as untrusted data;
-- never store private-key material or passwords in MCP calls or config.
+Read [docs/security.md](docs/security.md) before exposing production targets. Plain HTTP should stay on loopback or inside a trusted tunnel. Non-loopback deployments need TLS, explicit host/origin policy, short-lived scoped keys, least-privilege SSH identities, and append-only audit storage.
 
 ## Ideas and next steps
 
-See [docs/roadmap.md](docs/roadmap.md) for human approvals, ephemeral SSH certificates, constrained SFTP tools, fleet blast-radius budgets, cached host facts, OpenTelemetry, and session recording.
+See [docs/roadmap.md](docs/roadmap.md) for human approvals, external identity providers, ephemeral SSH certificates, constrained SFTP, fleet blast-radius budgets, cached host facts, telemetry, and session recording.

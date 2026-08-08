@@ -1,11 +1,12 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
+import { authorizeAccess, LOCAL_ACCESS, visibleTargets } from "./access.js";
 import { commandFingerprint } from "./audit.js";
 import { loadConfig } from "./config.js";
 import { evaluateCommand, getTarget } from "./policy.js";
 import { checkConnection, runRemoteCommand } from "./ssh.js";
-import type { ResolvedConfig } from "./types.js";
+import type { McpAccessContext, ResolvedConfig } from "./types.js";
 
 function textResult(value: unknown, isError = false) {
   return {
@@ -18,23 +19,27 @@ function errorResult(error: unknown) {
   return textResult({ error: error instanceof Error ? error.message : String(error) }, true);
 }
 
-function listTargets(config: ResolvedConfig) {
-  return Object.entries(config.targets).map(([name, target]) => ({
-    name,
-    destination: target.destination,
-    description: target.description,
-    tags: target.tags,
-    disabled: target.disabled,
-    requireReason: target.requireReason,
-  }));
+function listTargets(config: ResolvedConfig, access: McpAccessContext) {
+  const visible = new Set(visibleTargets(access, Object.keys(config.targets)));
+  return Object.entries(config.targets)
+    .filter(([name]) => visible.has(name))
+    .map(([name, target]) => ({
+      name,
+      destination: target.destination,
+      description: target.description,
+      tags: target.tags,
+      disabled: target.disabled,
+      requireReason: target.requireReason,
+    }));
 }
 
-export function createMcpServer(config: ResolvedConfig): McpServer {
+export function createMcpServer(config: ResolvedConfig, access: McpAccessContext = LOCAL_ACCESS): McpServer {
+  const source = access.transport === "http" ? "mcp-http" : "mcp";
   const server = new McpServer(
-    { name: "mcp-ssh-connectors", version: "0.1.0" },
+    { name: "mcp-ssh-connectors", version: "0.2.0" },
     {
       instructions:
-        "Use only named targets. Preview commands when uncertain. ssh_exec is non-interactive and always re-checks host policy before using the host OpenSSH client.",
+        "Use only named targets. Preview commands when uncertain. HTTP callers need ssh:read or ssh:exec plus an allowed target. ssh_exec always re-checks host policy.",
     },
   );
 
@@ -42,18 +47,22 @@ export function createMcpServer(config: ResolvedConfig): McpServer {
     "ssh_list_targets",
     {
       title: "List configured SSH targets",
-      description: "List the named SSH targets exposed by the host configuration. No connection is opened.",
+      description: "List the SSH targets visible to the authenticated caller. Requires ssh:read over HTTP.",
       inputSchema: z.object({}),
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async () => textResult({ config: config.path, targets: listTargets(config) }),
+    async () => {
+      const accessDecision = authorizeAccess(access, "ssh:read");
+      if (!accessDecision.allowed) return textResult(accessDecision, true);
+      return textResult({ actor: access.clientId, config: config.path, targets: listTargets(config, access) });
+    },
   );
 
   server.registerTool(
     "ssh_preview",
     {
       title: "Preview an SSH command",
-      description: "Check a command against the target allow/deny policy without connecting or executing it.",
+      description: "Check a command against API-key target scope and host policy without executing it. Requires ssh:read.",
       inputSchema: z.object({
         target: z.string().describe("Named target from ssh_list_targets"),
         command: z.string().describe("Exact single-line remote shell command"),
@@ -62,13 +71,10 @@ export function createMcpServer(config: ResolvedConfig): McpServer {
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ target, command, reason }) => {
+      const accessDecision = authorizeAccess(access, "ssh:read", target);
+      if (!accessDecision.allowed) return textResult(accessDecision, true);
       const decision = evaluateCommand(config, target, command, reason);
-      return textResult({
-        target,
-        destination: config.targets[target]?.destination,
-        commandHash: commandFingerprint(command),
-        ...decision,
-      });
+      return textResult({ target, destination: config.targets[target]?.destination, commandHash: commandFingerprint(command), access: accessDecision, ...decision });
     },
   );
 
@@ -76,13 +82,15 @@ export function createMcpServer(config: ResolvedConfig): McpServer {
     "ssh_check",
     {
       title: "Check SSH connectivity",
-      description: "Open a non-interactive SSH connection to a named target and run the no-op command 'true'.",
+      description: "Connect to an allowed target and run the no-op command 'true'. Requires ssh:read.",
       inputSchema: z.object({ target: z.string().describe("Named target from ssh_list_targets") }),
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     async ({ target }) => {
+      const accessDecision = authorizeAccess(access, "ssh:read", target);
+      if (!accessDecision.allowed) return textResult(accessDecision, true);
       try {
-        return textResult(await checkConnection(config, target, "mcp"));
+        return textResult(await checkConnection(config, target, source, access.clientId));
       } catch (error) {
         return errorResult(error);
       }
@@ -94,7 +102,7 @@ export function createMcpServer(config: ResolvedConfig): McpServer {
     {
       title: "Execute a policy-approved SSH command",
       description:
-        "Run one exact, non-interactive command on a configured target through the host OpenSSH client. Deny rules are evaluated before allow rules. Input cannot select arbitrary hosts, SSH options, or key material.",
+        "Run one exact, non-interactive command through host OpenSSH. Requires ssh:exec and target access; host deny/allow rules are then enforced.",
       inputSchema: z.object({
         target: z.string().describe("Named target from ssh_list_targets"),
         command: z.string().describe("Exact single-line remote shell command"),
@@ -104,13 +112,19 @@ export function createMcpServer(config: ResolvedConfig): McpServer {
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
     async ({ target, command, reason, timeoutMs }) => {
+      const accessDecision = authorizeAccess(access, "ssh:exec", target);
+      if (!accessDecision.allowed) return textResult(accessDecision, true);
       try {
         const decision = evaluateCommand(config, target, command, reason);
-        if (!decision.allowed) return textResult({ target, command, ...decision }, true);
+        if (!decision.allowed) return textResult({ target, command, access: accessDecision, ...decision }, true);
         const resolvedTarget = getTarget(config, target);
-        const effectiveTimeout = Math.min(timeoutMs ?? resolvedTarget.timeoutMs, resolvedTarget.timeoutMs);
-        const result = await runRemoteCommand(config, target, command, "mcp", reason, effectiveTimeout);
-        return textResult({ policy: decision, result }, !result.ok);
+        const result = await runRemoteCommand(config, target, command, {
+          source,
+          actor: access.clientId,
+          reason,
+          timeoutMs: Math.min(timeoutMs ?? resolvedTarget.timeoutMs, resolvedTarget.timeoutMs),
+        });
+        return textResult({ access: accessDecision, policy: decision, result }, !result.ok);
       } catch (error) {
         return errorResult(error);
       }
@@ -122,8 +136,8 @@ export function createMcpServer(config: ResolvedConfig): McpServer {
 
 export async function serveMcp(configPath?: string): Promise<void> {
   const config = await loadConfig(configPath);
-  const server = createMcpServer(config);
+  const server = createMcpServer(config, LOCAL_ACCESS);
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error(`mcp-ssh-connectors serving ${Object.keys(config.targets).length} target(s)`);
+  console.error(`mcp-ssh-connectors serving ${Object.keys(config.targets).length} target(s) over stdio`);
 }

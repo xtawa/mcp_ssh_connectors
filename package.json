@@ -1,12 +1,13 @@
 {
   "name": "mcp-ssh-connectors",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A policy-gated MCP server and local CLI that use the host OpenSSH client to reach configured SSH targets.",
   "private": true,
   "type": "module",
   "bin": {
     "mcp-ssh": "./dist/cli.js",
-    "mcp-ssh-server": "./dist/mcp-bin.js"
+    "mcp-ssh-server": "./dist/mcp-bin.js",
+    "mcp-ssh-http": "./dist/http-bin.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -31,13 +32,18 @@
     "test": "npm run build && node --test test/*.test.mjs",
     "check": "npm run typecheck && npm test",
     "dev": "tsx src/cli.ts",
-    "mcp": "tsx src/mcp-bin.ts"
+    "mcp": "tsx src/mcp-bin.ts",
+    "http": "tsx src/http-bin.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/express": "^2.0.0",
+    "@modelcontextprotocol/node": "^2.0.0",
     "@modelcontextprotocol/server": "^2.0.0",
+    "express": "^5.1.0",
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@types/express": "^5.0.0",
     "@types/node": "^24.10.0",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"
