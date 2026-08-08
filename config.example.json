@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "sshBinary": "ssh",
+  "auth": {
+    "keyStore": "~/.config/mcp-ssh/keys.json"
+  },
+  "http": {
+    "host": "127.0.0.1",
+    "port": 3000,
+    "allowedHosts": [],
+    "allowedOrigins": []
+  },
+  "audit": {
+    "required": true,
+    "logCommands": false
+  },
+  "defaults": {
+    "timeoutMs": 30000,
+    "connectTimeoutSeconds": 10,
+    "maxOutputBytes": 1048576,
+    "knownHostsFile": "~/.ssh/known_hosts"
+  },
+  "policy": {
+    "maxCommandLength": 4096,
+    "deniedCommands": [
+      "(?:^|[;&|]\\s*)rm\\s+-rf(?:\\s|$)",
+      "(?:^|\\s)sudo(?:\\s|$)",
+      "(?:^|\\s)(?:shutdown|reboot|poweroff)(?:\\s|$)"
+    ]
+  },
+  "targets": {
+    "example": {
+      "destination": "user@server.example.com",
+      "description": "Replace with a host or an alias from ~/.ssh/config",
+      "tags": ["example"],
+      "allowedCommands": [
+        "^(?:hostname|whoami|uptime|uname(?:\\s+-a)?)$"
+      ],
+      "deniedCommands": [],
+      "requireReason": false
+    }
+  }
+}
