@@ -17,12 +17,12 @@ Usage:
   mcp-ssh connect TARGET [--config PATH]
   mcp-ssh mcp [--config PATH]
   mcp-ssh http [--host HOST] [--port PORT] [--config PATH]
-  mcp-ssh key create NAME --targets LIST [--scopes LIST] [--expires 30d]
+  mcp-ssh key create NAME [--targets LIST] [--scopes LIST] [--expires 30d]
   mcp-ssh key list
   mcp-ssh key revoke KEY_ID
 
 API key scopes: mcp, ssh:read, ssh:exec. New keys default to mcp,ssh:read.
-Use --targets '*' explicitly for every configured target.
+New keys default to target '*' so their SSH scopes can use dynamic connections.
 `;
 
 function takeOption(args: string[], name: string): string | undefined {
@@ -72,7 +72,7 @@ async function manageKeys(configPath: string | undefined, args: string[]): Promi
   if (action === "create") {
     const name = args.shift();
     if (!name) throw new Error("key create requires a name");
-    const targets = csv(takeOption(args, "--targets") ?? "");
+    const targets = csv(takeOption(args, "--targets") ?? "*");
     const scopes = csv(takeOption(args, "--scopes") ?? "mcp,ssh:read");
     const expiresAt = parseExpiry(takeOption(args, "--expires") ?? "30d");
     if (!targets.includes("*")) {
@@ -102,7 +102,7 @@ async function main(): Promise<void> {
   }
   if (command === "init") {
     const path = await initializeConfig(configPath ?? defaultConfigPath());
-    process.stdout.write(`Created ${path}\nEdit the target and policy before use.\n`);
+    process.stdout.write(`Created ${path}\nDynamic MCP connections are ready; configured targets remain optional.\n`);
     return;
   }
   if (command === "mcp") {

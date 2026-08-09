@@ -1,7 +1,7 @@
 {
   "name": "mcp-ssh-connectors",
-  "version": "0.2.0",
-  "description": "A policy-gated MCP server and local CLI that use the host OpenSSH client to reach configured SSH targets.",
+  "version": "0.3.0",
+  "description": "An MCP server and local CLI that use host OpenSSH for dynamic or configured SSH connections.",
   "private": true,
   "type": "module",
   "bin": {

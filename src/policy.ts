@@ -42,3 +42,14 @@ export function evaluateCommand(
   if (!allowedPattern) return { allowed: false, reason: "Command did not match an allow rule" };
   return { allowed: true, reason: "Command matched an allow rule", matchedPattern: allowedPattern };
 }
+
+export function evaluateDynamicCommand(config: ResolvedConfig, command: string): PolicyDecision {
+  if (command.trim() === "") return { allowed: false, reason: "Command may not be empty" };
+  if (command.includes("\0") || command.includes("\n") || command.includes("\r")) {
+    return { allowed: false, reason: "NUL and multi-line commands are not accepted" };
+  }
+  if (Buffer.byteLength(command, "utf8") > config.maxCommandLength) {
+    return { allowed: false, reason: `Command exceeds the ${config.maxCommandLength}-byte limit` };
+  }
+  return { allowed: true, reason: "Dynamic connections allow any validated single-line command" };
+}

@@ -3,11 +3,21 @@ export { createApiKey, listApiKeys, parseExpiry, revokeApiKey, verifyApiKey } fr
 export { CONFIG_EXAMPLE, defaultConfigPath, initializeConfig, isLoopbackHost, loadConfig } from "./config.js";
 export { serveHttp } from "./http.js";
 export { createMcpServer, serveMcp } from "./mcp.js";
-export { evaluateCommand, getTarget } from "./policy.js";
-export { checkConnection, connectInteractive, runRemoteCommand } from "./ssh.js";
+export { evaluateCommand, evaluateDynamicCommand, getTarget } from "./policy.js";
+export {
+  checkConnection,
+  checkDynamicConnection,
+  connectInteractive,
+  runDynamicCommand,
+  runRemoteCommand,
+  validateDynamicConnection,
+} from "./ssh.js";
 export type { ApiKeyRecord, CreateApiKeyOptions, CreatedApiKey } from "./auth.js";
 export type {
   ExecResult,
+  DynamicAuthentication,
+  DynamicConnection,
+  DynamicDefaults,
   ExecutionSource,
   HttpConfig,
   McpAccessContext,

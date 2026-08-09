@@ -54,3 +54,8 @@ test("HTTP access requires both operation scope and target scope", () => {
   assert.equal(authorizeAccess(access, "ssh:exec", "staging").allowed, false);
   assert.equal(authorizeAccess(access, "ssh:read", "production").allowed, false);
 });
+
+test("dynamic HTTP access requires only the operation scope", () => {
+  const access = { transport: "http", clientId: "key-1", scopes: ["mcp", "ssh:exec", "target:staging"] };
+  assert.equal(authorizeAccess(access, "ssh:exec").allowed, true);
+});

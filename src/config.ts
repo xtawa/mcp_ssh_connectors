@@ -26,16 +26,7 @@ const EXAMPLE_CONFIG = {
       "(?:^|\\s)(?:shutdown|reboot|poweroff)(?:\\s|$)",
     ],
   },
-  targets: {
-    example: {
-      destination: "user@server.example.com",
-      description: "Replace with a host or an alias from ~/.ssh/config",
-      tags: ["example"],
-      allowedCommands: ["^(?:hostname|whoami|uptime|uname(?:\\s+-a)?)$"],
-      deniedCommands: [],
-      requireReason: false,
-    },
-  },
+  targets: {},
 };
 
 export const CONFIG_EXAMPLE = `${JSON.stringify(EXAMPLE_CONFIG, null, 2)}\n`;
@@ -161,8 +152,7 @@ export async function loadConfig(configPath = defaultConfigPath()): Promise<Reso
   const audit = objectOrEmpty(root.audit, "audit");
   const auth = objectOrEmpty(root.auth, "auth");
   const http = objectOrEmpty(root.http, "http");
-  const rawTargets = asObject(root.targets, "targets");
-  if (Object.keys(rawTargets).length === 0) throw new Error("targets must contain at least one named target");
+  const rawTargets = objectOrEmpty(root.targets, "targets");
 
   const defaultTimeout = integerValue(defaults.timeoutMs, 30_000, "defaults.timeoutMs", 100, 600_000);
   const defaultConnectTimeout = integerValue(defaults.connectTimeoutSeconds, 10, "defaults.connectTimeoutSeconds", 1, 120);
@@ -233,6 +223,12 @@ export async function loadConfig(configPath = defaultConfigPath()): Promise<Reso
     auditRequired: booleanValue(audit.required, true, "audit.required"),
     logCommands: booleanValue(audit.logCommands, false, "audit.logCommands"),
     maxCommandLength: integerValue(policy.maxCommandLength, 4_096, "policy.maxCommandLength", 1, 65_536),
+    dynamicDefaults: {
+      timeoutMs: defaultTimeout,
+      connectTimeoutSeconds: defaultConnectTimeout,
+      maxOutputBytes: defaultMaxOutput,
+      knownHostsFile: defaultKnownHosts ? resolve(expandUserPath(defaultKnownHosts)) : undefined,
+    },
     targets,
   };
 }

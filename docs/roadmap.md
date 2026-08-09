@@ -1,6 +1,6 @@
 # Roadmap and design ideas
 
-The first release keeps the attack surface small: named targets, preview/check/exec MCP tools, and an interactive local CLI. Useful follow-ons:
+Version 0.3 adds request-scoped password/private-key connections to arbitrary SSH destinations while retaining named targets for compatibility. Useful follow-ons:
 
 ## Human approval queue
 
@@ -8,7 +8,7 @@ For production targets, `ssh_prepare` could write a short-lived request containi
 
 ## Ephemeral identity providers
 
-Add optional adapters for short-lived OpenSSH certificates from Vault, Smallstep, AWS EC2 Instance Connect, or an internal CA. The MCP surface would still receive only a target alias; credential acquisition stays inside the host process.
+Add optional adapters for short-lived OpenSSH certificates from Vault, Smallstep, AWS EC2 Instance Connect, or an internal CA so long-lived passwords and private keys do not need to cross the MCP request boundary.
 
 ## Constrained file transfer
 

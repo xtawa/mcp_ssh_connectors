@@ -15,6 +15,24 @@ export interface TargetConfig {
   requireReason: boolean;
 }
 
+export type DynamicAuthentication =
+  | { type: "password"; password: string }
+  | { type: "privateKey"; privateKey: string; passphrase?: string };
+
+export interface DynamicConnection {
+  host: string;
+  username: string;
+  port?: number;
+  authentication: DynamicAuthentication;
+}
+
+export interface DynamicDefaults {
+  timeoutMs: number;
+  connectTimeoutSeconds: number;
+  maxOutputBytes: number;
+  knownHostsFile?: string;
+}
+
 export interface HttpConfig {
   host: string;
   port: number;
@@ -31,6 +49,7 @@ export interface ResolvedConfig {
   auditRequired: boolean;
   logCommands: boolean;
   maxCommandLength: number;
+  dynamicDefaults: DynamicDefaults;
   targets: Record<string, TargetConfig>;
 }
 

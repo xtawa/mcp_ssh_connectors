@@ -4,8 +4,8 @@ import * as z from "zod/v4";
 import { authorizeAccess, LOCAL_ACCESS, visibleTargets } from "./access.js";
 import { commandFingerprint } from "./audit.js";
 import { loadConfig } from "./config.js";
-import { evaluateCommand, getTarget } from "./policy.js";
-import { checkConnection, runRemoteCommand } from "./ssh.js";
+import { evaluateCommand, evaluateDynamicCommand, getTarget } from "./policy.js";
+import { checkConnection, checkDynamicConnection, runDynamicCommand, runRemoteCommand } from "./ssh.js";
 import type { McpAccessContext, ResolvedConfig } from "./types.js";
 
 function textResult(value: unknown, isError = false) {
@@ -33,13 +33,41 @@ function listTargets(config: ResolvedConfig, access: McpAccessContext) {
     }));
 }
 
+const dynamicAuthenticationSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("password"),
+    password: z.string().min(1).max(4_096).describe("Sensitive SSH password; never logged or returned"),
+  }),
+  z.object({
+    type: z.literal("privateKey"),
+    privateKey: z.string().min(1).max(262_144).describe("Sensitive OpenSSH or PEM private-key content; never logged or returned"),
+    passphrase: z.string().min(1).max(4_096).optional().describe("Optional sensitive private-key passphrase; never logged or returned"),
+  }),
+]);
+
+const dynamicConnectionSchema = z.object({
+  host: z.string().min(1).max(253).describe("SSH hostname or IP address"),
+  username: z.string().min(1).max(128).describe("Remote SSH username"),
+  port: z.number().int().min(1).max(65_535).optional().describe("SSH port; defaults to 22"),
+  authentication: dynamicAuthenticationSchema,
+});
+
+function requireExactlyOneConnection(
+  value: { target?: string; connection?: unknown },
+  context: z.core.$RefinementCtx,
+): void {
+  if ((value.target === undefined) === (value.connection === undefined)) {
+    context.addIssue({ code: "custom", message: "Provide exactly one of target or connection" });
+  }
+}
+
 export function createMcpServer(config: ResolvedConfig, access: McpAccessContext = LOCAL_ACCESS): McpServer {
   const source = access.transport === "http" ? "mcp-http" : "mcp";
   const server = new McpServer(
-    { name: "mcp-ssh-connectors", version: "0.2.0" },
+    { name: "mcp-ssh-connectors", version: "0.3.0" },
     {
       instructions:
-        "Use only named targets. Preview commands when uncertain. HTTP callers need ssh:read or ssh:exec plus an allowed target. ssh_exec always re-checks host policy.",
+        "ssh_check and ssh_exec accept either a configured target or an arbitrary dynamic connection with a password/private key. Dynamic commands are unrestricted after single-line and size validation. Never repeat credentials in output.",
     },
   );
 
@@ -82,15 +110,19 @@ export function createMcpServer(config: ResolvedConfig, access: McpAccessContext
     "ssh_check",
     {
       title: "Check SSH connectivity",
-      description: "Connect to an allowed target and run the no-op command 'true'. Requires ssh:read.",
-      inputSchema: z.object({ target: z.string().describe("Named target from ssh_list_targets") }),
+      description: "Connect to a configured target or any SSH server and run the no-op command 'true'. Requires ssh:read.",
+      inputSchema: z.object({
+        target: z.string().optional().describe("Configured target from ssh_list_targets"),
+        connection: dynamicConnectionSchema.optional().describe("Arbitrary SSH server and request-scoped credential"),
+      }).superRefine(requireExactlyOneConnection),
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
-    async ({ target }) => {
+    async ({ target, connection }) => {
       const accessDecision = authorizeAccess(access, "ssh:read", target);
       if (!accessDecision.allowed) return textResult(accessDecision, true);
       try {
-        return textResult(await checkConnection(config, target, source, access.clientId));
+        if (connection) return textResult(await checkDynamicConnection(config, connection, source, access.clientId));
+        return textResult(await checkConnection(config, target!, source, access.clientId));
       } catch (error) {
         return errorResult(error);
       }
@@ -100,25 +132,38 @@ export function createMcpServer(config: ResolvedConfig, access: McpAccessContext
   server.registerTool(
     "ssh_exec",
     {
-      title: "Execute a policy-approved SSH command",
+      title: "Execute an SSH command",
       description:
-        "Run one exact, non-interactive command through host OpenSSH. Requires ssh:exec and target access; host deny/allow rules are then enforced.",
+        "Run one exact non-interactive command on a configured target or any SSH server. Dynamic connections accept any validated single-line command. Requires ssh:exec.",
       inputSchema: z.object({
-        target: z.string().describe("Named target from ssh_list_targets"),
+        target: z.string().optional().describe("Configured target from ssh_list_targets"),
+        connection: dynamicConnectionSchema.optional().describe("Arbitrary SSH server and request-scoped credential"),
         command: z.string().describe("Exact single-line remote shell command"),
         reason: z.string().max(500).optional().describe("Human-readable purpose for the audit log"),
         timeoutMs: z.number().int().min(100).max(600_000).optional().describe("May shorten but never extend the target timeout"),
-      }),
+      }).superRefine(requireExactlyOneConnection),
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
-    async ({ target, command, reason, timeoutMs }) => {
+    async ({ target, connection, command, reason, timeoutMs }) => {
       const accessDecision = authorizeAccess(access, "ssh:exec", target);
       if (!accessDecision.allowed) return textResult(accessDecision, true);
       try {
-        const decision = evaluateCommand(config, target, command, reason);
-        if (!decision.allowed) return textResult({ target, command, access: accessDecision, ...decision }, true);
-        const resolvedTarget = getTarget(config, target);
-        const result = await runRemoteCommand(config, target, command, {
+        if (connection) {
+          const decision = evaluateDynamicCommand(config, command);
+          if (!decision.allowed) return textResult({ destination: `${connection.username}@${connection.host}:${connection.port ?? 22}`, access: accessDecision, ...decision }, true);
+          const result = await runDynamicCommand(config, connection, command, {
+            source,
+            actor: access.clientId,
+            reason,
+            timeoutMs: Math.min(timeoutMs ?? config.dynamicDefaults.timeoutMs, config.dynamicDefaults.timeoutMs),
+          });
+          return textResult({ access: accessDecision, policy: decision, result }, !result.ok);
+        }
+        const configuredTarget = target!;
+        const decision = evaluateCommand(config, configuredTarget, command, reason);
+        if (!decision.allowed) return textResult({ target: configuredTarget, command, access: accessDecision, ...decision }, true);
+        const resolvedTarget = getTarget(config, configuredTarget);
+        const result = await runRemoteCommand(config, configuredTarget, command, {
           source,
           actor: access.clientId,
           reason,
